@@ -11,7 +11,8 @@ const GITHUB_OAUTH_ACCESS_TOKEN_URL =
 	"https://github.com/login/oauth/access_token";
 const TOKEN_VALIDITY_PERIOD = 1000 * 60 * 60 * 24 * 365; // 1 year;
 
-const GITHUB_OAUTH_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+const GITHUB_OAUTH_AUTHORIZE_URL =
+	"https://github.com/apps/oncent-accounting/installations/new/permissions?target_id=49364151&target_type=User";
 
 // app.get('/', (c) => {
 // 	// 密钥长度（字节）: 32 字节等于 256 位
@@ -39,7 +40,6 @@ app.get("/api/oauth/authorize", async (c) => {
 	}
 	const env = c.env as Record<string, string>;
 	const { GITHUB_CLIENT_ID } = env;
-	console.log(GITHUB_CLIENT_ID, "client_id", env);
 	const headers = c.req.header();
 	const proto = headers["x-forwarded-proto"] || "http";
 	const redirect_uri = `${proto}://${headers.host}/api/oauth/authorized`;
