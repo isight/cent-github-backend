@@ -1,33 +1,90 @@
+// 我正在使用cloudflare workers部署一个用户 github app 授权服务端流程，使用 nodejs和hono编写，假设目标环境已经包含如下环境变量：
+// ```env
+// GITHUB_CLIENT_SECRET=xxx
+// GITHUB_CLIENT_ID=xxx
+// ```
+
+// ```typescript
+// function encodeState(value: string): Promise<string>
+
+// function decodeState(encryptedState: string): Promise<string>
+
+// ```
+// 并且提供了简易的加密方法 decodeState, encodeState ，请根据如下流程编写可用的授权程序，实现如下核心的登录接口：
+// ```typescript
+// app.get("/api/github-oauth/authorize")
+// app.get("/api/github-oauth/authorized")
+// ```
+
+// 核心流程如下：
+// 核心 GitHub App 登录/安装分流流程（Prompt 格式）
+// 目标： 在用户登录时，通过服务器端点判断其 GitHub App 安装状态，实现新老用户分流。
+
+// 核心流程提示词：
+
+// 模式： GitHub App 授权/安装分流（服务器控制）
+
+// 前置配置：
+
+// GitHub App 授权回调 URL (Callback URL) = 服务器端点 (/api/github-oauth/authorized)。
+
+// 取消勾选“安装时请求用户授权”。
+
+// 步骤：
+
+// 统一入口： 用户从客户端访问 (/api/github-oauth/authorize) 跳转至 GitHub OAuth 授权 URL (github.com/login/oauth/authorize)。
+
+// 授权回调 (服务器端)： GitHub 重定向到服务器端点 (/api/github-oauth/authorized)，附带 code。
+
+// 服务器操作（双重检查）： a. 获取 Token： 服务器使用 code 和保密的 client_secret 交换 User Access Token。 b. 检查安装： 服务器使用该 User Access Token 调用 GitHub API (/user/installations) 检查 App 是否已安装。
+
+// 智能分流重定向：
+
+// If 已安装 (老用户)： 服务器将 User Access Token 传给客户端，并重定向到应用首页 AFTER_LOGIN_URL。
+
+// If 未安装 (新用户)： 服务器 302 重定向到 App 安装 URL (/apps/YOUR-APP-SLUG/installations/new)。
+
+// 后续登录： 无论是分流后的首页还是完成安装后的重定向，客户端均使用获得的 User Access Token 建立前端会话。
+
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { cors } from "hono/cors";
+import { encodeState, decodeState } from "./lib/state";
+import white_list from "./white_list";
 
-import { decodeState, encodeState } from "./lib/state";
-import WHITE_LIST from "./white_list";
-import { generateAESPassword } from "./lib/encryption";
+/**
+ * 定义 Cloudflare Worker 的环境变量类型，确保类型安全。
+ * 在 Cloudflare 控制台中必须设置 GITHUB_CLIENT_ID 和 GITHUB_CLIENT_SECRET。
+ */
+type Bindings = {
+	GITHUB_CLIENT_ID: string;
+	GITHUB_CLIENT_SECRET: string;
+	// 如果使用 Worker KV 或其他绑定，请在此处添加
+};
 
-const app = new Hono();
+const app = new Hono<{ Bindings: Bindings }>();
+app.use("/*", cors());
 
-const GITHUB_OAUTH_ACCESS_TOKEN_URL =
-	"https://github.com/login/oauth/access_token";
-const TOKEN_VALIDITY_PERIOD = 1000 * 60 * 60 * 24 * 365; // 1 year;
+// --- 配置常量 ---
+// 警告：请务必将下面的值替换为您自己的 GitHub App 的实际信息！
+const GITHUB_APP_SLUG = "cent-accounting";
 
-const GITHUB_OAUTH_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
-
-// app.get('/', (c) => {
-// 	// 密钥长度（字节）: 32 字节等于 256 位
-// 	const password = generateAESPassword(32);
-// 	console.log('new password:', password);
-// 	return c.text('Hello Hono!');
-// });
 const INVALID_REDIRECT_MSG =
 	"redirect url not valid, see https://github.com/glink25/github-login?tab=readme-ov-file#%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8";
 const isValidRedirect = (url: string) => {
-	return WHITE_LIST.some((v) => url.startsWith(v));
+	return white_list.some((v) => url.startsWith(v));
 };
 
-app.use("/*", cors());
-
-app.get("/api/oauth/authorize", async (c) => {
+/**
+ * 路由 1: /api/github-oauth/authorize
+ * 描述: 这是用户授权的统一入口点。
+ * 流程:
+ * 1. 创建一个唯一的 state 值以防止 CSRF 攻击。
+ * 2. 将 state 加密。
+ * 3. 构建 GitHub OAuth URL 并将用户重定向过去。
+ */
+app.get("/api/github-oauth/authorize", async (c) => {
+	const env = c.env as Record<string, string>;
 	const { redirect_uri: appReturnUrl } = c.req.query();
 	if (!appReturnUrl) {
 		c.status(400);
@@ -37,116 +94,147 @@ app.get("/api/oauth/authorize", async (c) => {
 		c.status(400);
 		return c.json({ error: INVALID_REDIRECT_MSG });
 	}
-	const env = c.env as Record<string, string>;
-	const { GITHUB_CLIENT_ID } = env;
-	const headers = c.req.header();
-	const proto = headers["x-forwarded-proto"] || "http";
-	const redirect_uri = `${proto}://${headers.host}/api/oauth/authorized`;
-	const state = await encodeState(appReturnUrl, env.ENCRYPTION_SECRETS);
+	const statePayload = appReturnUrl;
+	const state = await encodeState(statePayload, env.ENCRYPTION_SECRETS);
 
-	const oauthParams = new URLSearchParams({
-		client_id: GITHUB_CLIENT_ID,
-		redirect_uri,
-		state,
-		scope: "repo",
-	});
-	return c.redirect(`${GITHUB_OAUTH_AUTHORIZE_URL}?${oauthParams}`, 302);
+	const authUrl = new URL("https://github.com/login/oauth/authorize");
+	authUrl.searchParams.set("client_id", c.env.GITHUB_CLIENT_ID);
+	// GitHub App 规范要求 redirect_uri 在这里不是必须的，它会使用 App 设置中配置的回调 URL
+	// authUrl.searchParams.set('redirect_uri', 'YOUR_CALLBACK_URL');
+	authUrl.searchParams.set("state", state);
+	// 对于检查安装状态，不需要特殊 scope，登录即可
+	// authUrl.searchParams.set('scope', 'read:user');
+
+	console.log("Redirecting user to GitHub for authorization...");
+	return c.redirect(authUrl.toString());
 });
 
-app.get("/api/oauth/authorized", async (c) => {
-	const { code, state, error } = c.req.query() as Record<string, string>;
+/**
+ * 路由 2: /api/github-oauth/authorized
+ * 描述: 这是 GitHub 授权后的回调地址。
+ * 流程:
+ * 1. 从查询参数中获取 code 和 state。
+ * 2. 验证 state 的有效性。
+ * 3. 使用 code 向 GitHub 交换 User Access Token。
+ * 4. 使用 Token 调用 GitHub API 检查用户是否已安装该 App。
+ * 5. 根据安装状态，将用户智能分流到“应用首页”或“App 安装页”。
+ */
+app.get("/api/github-oauth/authorized", async (c) => {
 	const env = c.env as Record<string, string>;
-	const {
-		GITHUB_CLIENT_ID: client_id,
-		GITHUB_CLIENT_SECRET: client_secret,
-		ENCRYPTION_SECRETS: encryption_password,
-	} = env;
-
+	const code = c.req.query("code");
+	const state = c.req.query("state");
+	// 步骤 1: 验证参数
+	if (!code || !state) {
+		throw new HTTPException(400, {
+			message: 'Missing "code" or "state" query parameter.',
+		});
+	}
 	let appReturnUrl: string;
 	try {
-		appReturnUrl = await decodeState(state, encryption_password);
+		appReturnUrl = await decodeState(state, env.ENCRYPTION_SECRETS);
+		console.log("State validation successful.");
 	} catch (err: any) {
-		c.status(400);
-		return c.json({ error: err.message });
+		console.error("Invalid state received:", err);
+		throw new HTTPException(400, { message: err.message });
 	}
 
 	if (!isValidRedirect(appReturnUrl)) {
-		c.status(400);
-		return c.json({ error: INVALID_REDIRECT_MSG });
+		throw new HTTPException(400, { message: INVALID_REDIRECT_MSG });
 	}
 	const returnUrl = new URL(appReturnUrl);
 
-	if (error) {
-		const rUrl = new URL(appReturnUrl);
-		rUrl.searchParams.set("error", error);
-		return c.redirect(returnUrl.href, 302);
-	}
-
-	if (!code || !state) {
-		c.status(400);
-		return c.json({ error: "`code` and `state` are required." });
-	}
-
-	const init = {
-		method: "POST",
-		body: JSON.stringify({ client_id, client_secret, code, state }),
-		headers: {
-			"content-type": "application/json",
-			Accept: "application/json",
-			"User-Agent": "urodele-blog",
+	// 步骤 3: 使用 code 交换 Access Token
+	console.log("Exchanging code for access token...");
+	const tokenResponse = await fetch(
+		"https://github.com/login/oauth/access_token",
+		{
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify({
+				client_id: c.env.GITHUB_CLIENT_ID,
+				client_secret: c.env.GITHUB_CLIENT_SECRET,
+				code: code,
+			}),
 		},
+	);
+
+	if (!tokenResponse.ok) {
+		const errorBody = await tokenResponse.text();
+		console.error("Failed to get access token:", errorBody);
+		throw new HTTPException(500, {
+			message: "Failed to exchange code for access token.",
+		});
+	}
+
+	const tokenData = (await tokenResponse.json()) as {
+		access_token?: string;
+		error?: string;
 	};
 
-	let loginData: Record<string, string>;
-	try {
-		const response = await fetch(GITHUB_OAUTH_ACCESS_TOKEN_URL, init);
-		const data: any = await response.json();
-		if (response.ok && !data.error) {
-			loginData = data;
-			console.log(data, "login success");
-		} else {
-			console.error(data);
-			throw new Error(`Access token response had status ${response.status}.`);
-		}
-	} catch (err: any) {
-		c.status(503);
-		return c.json({ error: err.message });
+	if (tokenData.error || !tokenData.access_token) {
+		console.error("Error in token response from GitHub:", tokenData);
+		throw new HTTPException(400, {
+			message: `GitHub returned an error: ${tokenData.error}`,
+		});
 	}
 
-	const accessToken = loginData.access_token;
-	const refreshToken = loginData.refresh_token;
-	const [accessSession, refreshSession] = await Promise.all(
-		[accessToken, refreshToken].map((token) =>
-			encodeState(
-				token,
-				encryption_password,
-				Date.now() + TOKEN_VALIDITY_PERIOD,
-			),
-		),
+	const accessToken = tokenData.access_token;
+	console.log("Successfully obtained access token.");
+
+	// 步骤 4: 检查用户 App 安装状态
+	console.log("Checking user installation status...");
+	const installationsResponse = await fetch(
+		"https://api.github.com/user/installations",
+		{
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+				Accept: "application/vnd.github.v3+json",
+				"User-Agent": `${GITHUB_APP_SLUG} (Cloudflare Worker)`, // 推荐设置 User-Agent
+			},
+		},
 	);
-	returnUrl.searchParams.set("accessSession", accessSession);
-	returnUrl.searchParams.set("refreshSession", refreshSession);
-	return c.redirect(returnUrl.href, 302);
-});
 
-app.post("/api/oauth/token", async (c) => {
-	const { session } = (await c.req.json()) as any;
-	if (!session) {
-		c.status(400);
-		return c.json({ error: "Unable to parse request body." });
-	}
-	const env = c.env as Record<string, string>;
-	const { ENCRYPTION_SECRETS: encryption_password } = env;
-	let token: string;
-	try {
-		token = await decodeState(session, encryption_password);
-	} catch (err: any) {
-		c.status(400);
-		return c.json({ error: err.message });
+	if (!installationsResponse.ok) {
+		const errorBody = await installationsResponse.text();
+		console.error("Failed to fetch user installations:", errorBody);
+		throw new HTTPException(500, {
+			message: "Failed to check app installation status.",
+		});
 	}
 
-	c.status(200);
-	return c.json({ token });
+	const installationsData = (await installationsResponse.json()) as {
+		total_count: number;
+		installations: any[];
+	};
+
+	// 步骤 5: 智能分流
+	if (
+		installationsData.total_count > 0 &&
+		installationsData.installations.length > 0
+	) {
+		// 情况 A: 已安装 App (老用户)
+		console.log("User has installed the app. Redirecting to dashboard.");
+		const redirectUrl = returnUrl;
+		// 将 token 作为参数传递给前端，前端需要实现接收逻辑
+		redirectUrl.searchParams.set(
+			"github_authorized",
+			JSON.stringify(tokenData),
+		);
+		return c.redirect(redirectUrl.toString());
+	} else {
+		// 情况 B: 未安装 App (新用户)
+		console.log(
+			"User has not installed the app. Redirecting to installation page.",
+		);
+		const installUrl = new URL(
+			`https://github.com/apps/${GITHUB_APP_SLUG}/installations/new`,
+		);
+		installUrl.searchParams.set("state", state);
+		return c.redirect(installUrl);
+	}
 });
 
 export default app;
