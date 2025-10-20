@@ -237,4 +237,53 @@ app.get("/api/github-oauth/authorized", async (c) => {
 	}
 });
 
+/**
+ * 刷新 github token
+ */
+app.post("/api/github-oauth/refresh-token", async (c) => {
+	const body = await c.req.json();
+	const refreshToken = body.refreshToken;
+	if (!refreshToken) {
+		throw new HTTPException(500, {
+			message: "invalid refresh token.",
+		});
+	}
+	const tokenResponse = await fetch(
+		"https://github.com/login/oauth/access_token",
+		{
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify({
+				client_id: c.env.GITHUB_CLIENT_ID,
+				client_secret: c.env.GITHUB_CLIENT_SECRET,
+				grant_type: "refresh_token",
+				refresh_token: refreshToken,
+			}),
+		},
+	);
+	if (!tokenResponse.ok) {
+		const errorBody = await tokenResponse.text();
+		console.error("Failed to get access token:", errorBody);
+		throw new HTTPException(500, {
+			message: "Failed to exchange code for access token.",
+		});
+	}
+
+	const tokenData = (await tokenResponse.json()) as {
+		access_token?: string;
+		error?: string;
+	};
+
+	if (tokenData.error || !tokenData.access_token) {
+		console.error("Error in token response from GitHub:", tokenData);
+		throw new HTTPException(400, {
+			message: `GitHub returned an error: ${tokenData.error}`,
+		});
+	}
+	return c.json(tokenData);
+});
+
 export default app;
