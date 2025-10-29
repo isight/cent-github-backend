@@ -357,7 +357,7 @@ app.all("/proxy", async (c) => {
 	// }
 
 	// 3. **构造转发请求**
-	// 使用 c.req.raw 获取原始 Request 对象。
+	// 使用 c.req.raw 获取原始 Request 对象，body需要clone。
 	// Request 对象的 Headers 是只读的，但我们可以通过 new Request() 克隆并修改它。
 
 	// **注意：** Cloudflare Workers 默认会设置/修改一些头部，例如：
