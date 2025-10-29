@@ -332,94 +332,44 @@ app.post("/api/github-oauth/refresh-token", async (c) => {
 // 2. **反向代理主逻辑**
 // app.all('*') 匹配所有 HTTP 方法和所有路径。
 app.all("/proxy", async (c) => {
-	// 从 URL 查询参数中获取目标网址
 	const targetUrl = c.req.query("url");
-
-	if (!targetUrl) {
-		// 如果没有提供目标 URL，返回错误信息
-		return c.text(
-			'Missing "url" query parameter. Usage: /proxy?url=https://example.com/api',
-			400,
-		);
-	}
+	if (!targetUrl) return c.text('Missing "url" query parameter.', 400);
 
 	let url: URL;
 	try {
 		url = new URL(targetUrl);
-	} catch (e) {
-		// 目标 URL 格式不正确
+	} catch {
 		return c.text("Invalid target URL format.", 400);
 	}
 
-	// 可选：安全检查 - 确保只代理到特定的白名单域名
-	// if (!url.hostname.endsWith('example.com')) {
-	//     return c.text('Target domain not allowed.', 403);
-	// }
-
-	// 3. **构造转发请求**
-	// 使用 c.req.raw 获取原始 Request 对象，body需要clone。
-	// Request 对象的 Headers 是只读的，但我们可以通过 new Request() 克隆并修改它。
-
-	// **注意：** Cloudflare Workers 默认会设置/修改一些头部，例如：
-	// - Host 头部会被自动设置为目标 URL 的 Host
-	// - Connection、Keep-Alive 等不应被转发的头部会被移除
-	//
-	// 此外，为了避免某些服务器因原始请求中的 Origin 头部而拒绝请求，
-	// 我们可以选择移除或修改它。由于 Workers 在发送请求时将成为“同源”，
-	// 很多情况下可以直接删除 Origin 头部。
-
-	const requestHeaders = new Headers(c.req.raw.headers);
-	// 移除 Origin 头部，以防止目标服务器看到跨域请求的标志
-	requestHeaders.delete("Origin");
-	// 移除 Host 头部，fetch 会自动根据目标 URL 设置正确的 Host
-	requestHeaders.delete("Host");
+	const headers = new Headers(c.req.raw.headers);
+	headers.delete("Origin");
+	headers.delete("Host");
 
 	let body: BodyInit | null = null;
 	if (c.req.method !== "GET" && c.req.method !== "HEAD") {
 		body = await c.req.arrayBuffer();
 	}
-	const proxyRequest = new Request(url.toString(), {
-		method: c.req.method,
-		headers: requestHeaders,
-		body, // 转发请求体
-		redirect: "follow", // 遵循重定向
-		// 其他请求初始化选项...
-	});
 
 	let response: Response;
 	try {
-		// 4. **发起请求到目标网址**
-		response = await fetch(proxyRequest);
+		response = await fetch(url.toString(), {
+			method: c.req.method,
+			headers,
+			body,
+			redirect: "follow",
+		});
 	} catch (e) {
 		console.error("Fetch error:", e);
-		return c.text(
-			`Failed to fetch target URL: ${e instanceof Error ? e.message : "Unknown error"}`,
-			502,
-		);
+		return c.text(`Failed to fetch target URL: ${e}`, 502);
 	}
 
-	// 5. **返回响应并添加 CORS 头部**
-	// **重要：** 必须克隆响应对象以修改其头部，Cloudflare Workers 中的 Response 头部默认是不可变的。
-	const modifiedResponse = new Response(response.body, response);
+	const modified = new Response(response.body, response);
+	modified.headers.delete("Content-Security-Policy");
+	modified.headers.delete("X-Frame-Options");
+	modified.headers.delete("Access-Control-Allow-Origin");
 
-	// **注意：** // 由于我们在 Hono 的 app.use('*', cors()) 中已经配置了 CORS 头部，
-	// Hono 会自动处理 OPTIONS 预检请求并为所有响应添加 Access-Control-Allow-Origin 等头部。
-	// 因此，通常不需要手动再次添加 CORS 头部。
-
-	// 如果想要确保万无一失，可以手动添加（但 Hono 应该已经处理了）：
-	// modifiedResponse.headers.set('Access-Control-Allow-Origin', '*');
-	// modifiedResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-	// modifiedResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-
-	// 移除可能阻止响应的头部（例如内容安全策略 CSP）
-	modifiedResponse.headers.delete("Content-Security-Policy");
-	modifiedResponse.headers.delete("X-Content-Security-Policy");
-	modifiedResponse.headers.delete("X-Frame-Options");
-
-	// 移除目标服务器设置的 CORS 头部（如果存在，Workers 会覆盖）
-	modifiedResponse.headers.delete("Access-Control-Allow-Origin");
-
-	return modifiedResponse;
+	return modified;
 });
 
 export default app;
