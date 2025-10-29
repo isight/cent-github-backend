@@ -374,10 +374,14 @@ app.all("/proxy", async (c) => {
 	// 移除 Host 头部，fetch 会自动根据目标 URL 设置正确的 Host
 	requestHeaders.delete("Host");
 
+	let body: BodyInit | null = null;
+	if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+		body = await c.req.arrayBuffer();
+	}
 	const proxyRequest = new Request(url.toString(), {
 		method: c.req.method,
 		headers: requestHeaders,
-		body: c.req.raw.body, // 转发请求体
+		body, // 转发请求体
 		redirect: "follow", // 遵循重定向
 		// 其他请求初始化选项...
 	});
