@@ -373,6 +373,21 @@ app.all("/proxy", async (c) => {
 		return c.text(`Failed to fetch target URL: ${e}`, 502);
 	}
 	console.log("proxy re-send success");
+	// 打印响应信息 (用于诊断 520)
+	// 5. 诊断 520 错误的关键步骤：检查响应状态和头大小
+	const responseStatus = response.status;
+	let headerSize = 0;
+	let responseHeadersString = "";
+
+	// 遍历响应头，计算大小并记录
+	for (const [key, value] of response.headers.entries()) {
+		// 粗略计算头大小 (key + value + 冒号 + 换行)
+		headerSize += key.length + value.length + 4;
+		responseHeadersString += `${key}: ${value}, `;
+	}
+	console.log(
+		`[Proxy Response] Status: ${responseStatus}, Headers Size: ${headerSize} bytes, Headers: ${responseHeadersString.slice(0, 500)}...`,
+	);
 
 	// 移除部分安全头，允许前端访问
 	const modified = new Response(response.body, response);
