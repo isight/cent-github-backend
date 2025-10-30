@@ -333,6 +333,8 @@ app.post("/api/github-oauth/refresh-token", async (c) => {
 // app.all('*') 匹配所有 HTTP 方法和所有路径。
 app.all("/proxy", async (c) => {
 	const targetUrl = c.req.query("url");
+	const overrideMethod = c.req.query("method"); // 新增：检测是否携带 method 参数
+
 	if (!targetUrl) return c.text('Missing "url" query parameter.', 400);
 
 	let url: URL;
@@ -342,19 +344,25 @@ app.all("/proxy", async (c) => {
 		return c.text("Invalid target URL format.", 400);
 	}
 
+	// 获取请求头并移除不应被转发的字段
 	const headers = new Headers(c.req.raw.headers);
 	headers.delete("Origin");
 	headers.delete("Host");
 
+	// 读取请求体（仅对非 GET/HEAD 方法）
 	let body: BodyInit | null = null;
-	if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+	const method = (overrideMethod || c.req.method).toUpperCase();
+
+	if (method !== "GET" && method !== "HEAD") {
+		// 注意：即使 method 覆盖为 PROPFIND，也要允许 body
 		body = await c.req.arrayBuffer();
 	}
 
+	// 发起实际的转发请求
 	let response: Response;
 	try {
 		response = await fetch(url.toString(), {
-			method: c.req.method,
+			method,
 			headers,
 			body,
 			redirect: "follow",
@@ -364,6 +372,7 @@ app.all("/proxy", async (c) => {
 		return c.text(`Failed to fetch target URL: ${e}`, 502);
 	}
 
+	// 移除部分安全头，允许前端访问
 	const modified = new Response(response.body, response);
 	modified.headers.delete("Content-Security-Policy");
 	modified.headers.delete("X-Frame-Options");
