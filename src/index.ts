@@ -361,6 +361,7 @@ app.all("/proxy", async (c) => {
 	// 发起实际的转发请求
 	let response: Response;
 	try {
+		console.log("start proxy re-send:");
 		response = await fetch(url.toString(), {
 			method,
 			headers,
@@ -371,6 +372,7 @@ app.all("/proxy", async (c) => {
 		console.error("Fetch error:", e);
 		return c.text(`Failed to fetch target URL: ${e}`, 502);
 	}
+	console.log("proxy re-send success");
 
 	// 移除部分安全头，允许前端访问
 	const modified = new Response(response.body, response);
