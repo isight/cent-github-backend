@@ -59,6 +59,9 @@ import white_list from "./white_list";
 type Bindings = {
 	GITHUB_CLIENT_ID: string;
 	GITHUB_CLIENT_SECRET: string;
+	// Gitee (码云) OAuth
+	GITEE_CLIENT_ID: string;
+	GITEE_CLIENT_SECRET: string;
 	// 如果使用 Worker KV 或其他绑定，请在此处添加
 };
 
@@ -329,7 +332,156 @@ app.post("/api/github-oauth/refresh-token", async (c) => {
 	return c.json(tokenData);
 });
 
-// 2. **反向代理主逻辑**
+// 2. gitee 授权相关
+// 基于 Gitee (码云) 的 OAuth2 实现，流程与上面的 GitHub 类似：
+// 1) /api/gitee-oauth/authorize - 统一入口，生成 state 并重定向到 gitee 授权页
+// 2) /api/gitee-oauth/authorized - 授权回调，使用 code 交换 access_token 并将结果重定向回客户端
+// 3) /api/gitee-oauth/refresh-token - 使用 refresh_token 刷新 access_token
+
+app.get("/api/gitee-oauth/authorize", async (c) => {
+	const env = c.env as Record<string, string>;
+	const { redirect_uri: appReturnUrl } = c.req.query();
+	if (!appReturnUrl) {
+		c.status(400);
+		return c.json({ error: "`redirect_uri` is required." });
+	}
+	if (!isValidRedirect(appReturnUrl)) {
+		c.status(400);
+		return c.json({ error: INVALID_REDIRECT_MSG });
+	}
+
+	const statePayload = appReturnUrl;
+	const state = await encodeState(statePayload, env.ENCRYPTION_SECRETS);
+
+	// 回调地址：使用当前 worker 的 origin + 回调路径
+	const origin = new URL(c.req.url).origin;
+	const callback = `${origin}/api/gitee-oauth/authorized`;
+
+	const authUrl = new URL("https://gitee.com/oauth/authorize");
+	authUrl.searchParams.set("client_id", c.env.GITEE_CLIENT_ID);
+	authUrl.searchParams.set("redirect_uri", callback);
+	authUrl.searchParams.set("response_type", "code");
+	authUrl.searchParams.set("state", state);
+
+	console.log(
+		"Redirecting user to Gitee for authorization...",
+		authUrl.toString(),
+	);
+	return c.redirect(authUrl.toString());
+});
+
+app.get("/api/gitee-oauth/authorized", async (c) => {
+	const env = c.env as Record<string, string>;
+	const code = c.req.query("code");
+	const state = c.req.query("state");
+	if (!code || !state) {
+		throw new HTTPException(400, {
+			message: 'Missing "code" or "state" query parameter.',
+		});
+	}
+
+	let appReturnUrl: string;
+	try {
+		appReturnUrl = await decodeState(state, env.ENCRYPTION_SECRETS);
+		console.log("Gitee state validation successful.");
+	} catch (err: any) {
+		console.error("Invalid state received from Gitee:", err);
+		throw new HTTPException(400, { message: err.message });
+	}
+
+	if (!isValidRedirect(appReturnUrl)) {
+		throw new HTTPException(400, { message: INVALID_REDIRECT_MSG });
+	}
+
+	// 交换 access_token
+	const origin = new URL(c.req.url).origin;
+	const callback = `${origin}/api/gitee-oauth/authorized`;
+
+	const params = new URLSearchParams({
+		grant_type: "authorization_code",
+		code: code,
+		client_id: c.env.GITEE_CLIENT_ID,
+		client_secret: c.env.GITEE_CLIENT_SECRET,
+		redirect_uri: callback,
+	});
+
+	console.log("Exchanging code for Gitee access token...");
+	const tokenResponse = await fetch("https://gitee.com/oauth/token", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded",
+			Accept: "application/json",
+		},
+		body: params.toString(),
+	});
+
+	if (!tokenResponse.ok) {
+		const errorBody = await tokenResponse.text();
+		console.error("Failed to get Gitee access token:", errorBody);
+		throw new HTTPException(500, {
+			message: "Failed to exchange code for access token (Gitee).",
+		});
+	}
+
+	const tokenData = await tokenResponse.json();
+	if ((tokenData as any).error || !(tokenData as any).access_token) {
+		console.error("Error in Gitee token response:", tokenData);
+		throw new HTTPException(400, {
+			message: `Gitee returned an error: ${(tokenData as any).error}`,
+		});
+	}
+
+	// 将 token 信息带回前端
+	const returnUrl = new URL(appReturnUrl);
+	returnUrl.searchParams.set("gitee_authorized", JSON.stringify(tokenData));
+	return c.redirect(returnUrl.toString());
+});
+
+app.post("/api/gitee-oauth/refresh-token", async (c) => {
+	const body = await c.req.json();
+	const refreshToken = body.refreshToken;
+	if (!refreshToken) {
+		throw new HTTPException(400, {
+			message: "invalid refresh token.",
+		});
+	}
+
+	const params = new URLSearchParams({
+		grant_type: "refresh_token",
+		refresh_token: refreshToken,
+		client_id: c.env.GITEE_CLIENT_ID,
+		client_secret: c.env.GITEE_CLIENT_SECRET,
+	});
+
+	const tokenResponse = await fetch("https://gitee.com/oauth/token", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded",
+			Accept: "application/json",
+		},
+		body: params.toString(),
+	});
+
+	if (!tokenResponse.ok) {
+		const errorBody = await tokenResponse.text();
+		console.error("Failed to refresh Gitee token:", errorBody);
+		throw new HTTPException(500, {
+			message: "Failed to refresh access token (Gitee).",
+		});
+	}
+
+	const tokenData = await tokenResponse.json();
+	if ((tokenData as any).error || !(tokenData as any).access_token) {
+		console.error("Error in Gitee refresh response:", tokenData);
+		throw new HTTPException(400, {
+			message: `Gitee returned an error: ${(tokenData as any).error}`,
+		});
+	}
+
+	return c.json(tokenData as any);
+});
+
+// 3. **反向代理主逻辑**
 // app.all('*') 匹配所有 HTTP 方法和所有路径。
 app.all("/proxy", async (c) => {
 	const targetUrl = c.req.query("url");
