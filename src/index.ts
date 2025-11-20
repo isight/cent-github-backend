@@ -484,7 +484,7 @@ app.post("/api/gitee-oauth/refresh-token", async (c) => {
 });
 
 // 注册子路由
-// app.route("", proxyRouter);
-// app.route("", currencyRouter);
+app.route("", proxyRouter);
+app.route("", currencyRouter);
 
 export default app;
