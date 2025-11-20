@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
+import white_list from "../white_list";
 
 type Bindings = {
 	GITHUB_CLIENT_ID: string;
@@ -84,5 +86,13 @@ proxyRouter.all("/proxy", async (c) => {
 
 	return modified;
 });
+
+proxyRouter.use(
+	"*",
+	cors({
+		// 允许所有来源访问，这是实现 CORS 绕过的关键
+		origin: white_list,
+	}),
+);
 
 export default proxyRouter;

@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { fetchCurrency } from "../lib/kurrency";
+import { cors } from "hono/cors";
+import white_list from "../white_list";
 
 type Bindings = {
 	GITHUB_CLIENT_ID: string;
@@ -52,5 +54,13 @@ currencyRouter.get("/api/currency/:base/:date", async (c) => {
 		);
 	}
 });
+
+currencyRouter.use(
+	"*",
+	cors({
+		// 允许所有来源访问，这是实现 CORS 绕过的关键
+		origin: white_list,
+	}),
+);
 
 export default currencyRouter;
