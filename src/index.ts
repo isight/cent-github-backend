@@ -115,7 +115,7 @@ app.use(
 
 // --- 配置常量 ---
 // 警告：请务必将下面的值替换为您自己的 GitHub App 的实际信息！
-const GITHUB_APP_SLUG = "cent-accounting";
+const GITHUB_APP_SLUG = "Isight";
 
 const INVALID_REDIRECT_MSG =
 	"redirect url not valid, see https://github.com/glink25/github-login?tab=readme-ov-file#%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8";
