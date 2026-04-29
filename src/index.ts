@@ -155,6 +155,7 @@ app.get("/api/github-oauth/authorize", async (c) => {
 			await verifyRedirectSign(c.req.query("sign"), signSecret);
 		} catch (err: any) {
 			c.status(400);
+			console.error("[verifyRedirectSign]:", err.message);
 			return c.json({ error: err.message });
 		}
 	}
