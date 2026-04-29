@@ -1,7 +1,7 @@
 import { aesGcmDecrypt } from "./encryption";
 
-/** 与服务器时间偏差允许范围（毫秒），含时钟偏差 */
-const SIGN_TIME_WINDOW_MS = 60_000;
+/** 与服务器时间偏差允许范围（毫秒）：前后各 5 分钟 */
+const SIGN_TIME_WINDOW_MS = 5 * 60_000;
 
 export function isHttpOrHttpsRedirect(uri: string): boolean {
 	const s = uri.trim();
@@ -33,7 +33,7 @@ export async function verifyRedirectSign(
 	}
 	if (Math.abs(nowMs - ts) > SIGN_TIME_WINDOW_MS) {
 		throw new Error(
-			"sign timestamp expired or not within acceptable window (1 minute).",
+			"sign timestamp expired or not within acceptable window (±5 minutes).",
 		);
 	}
 }
