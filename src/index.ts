@@ -49,6 +49,7 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { cors } from "hono/cors";
+import { isHttpOrHttpsRedirect, verifyRedirectSign } from "./lib/sign_verify";
 import { encodeState, decodeState } from "./lib/state";
 import white_list from "./white_list";
 import proxyRouter from "./routes/proxy";
@@ -64,6 +65,8 @@ type Bindings = {
 	// Gitee (码云) OAuth
 	GITEE_CLIENT_ID: string;
 	GITEE_CLIENT_SECRET: string;
+	/** 非 http(s) redirect_uri 时 authorize 查询参数 sign 的 AES-GCM 密钥；生产环境用 wrangler secret put SIGN_SECRETS */
+	SIGN_SECRETS?: string;
 	// 如果使用 Worker KV 或其他绑定，请在此处添加
 };
 
@@ -141,6 +144,19 @@ app.get("/api/github-oauth/authorize", async (c) => {
 	if (!isValidRedirect(appReturnUrl)) {
 		c.status(400);
 		return c.json({ error: INVALID_REDIRECT_MSG });
+	}
+	if (!isHttpOrHttpsRedirect(appReturnUrl)) {
+		const signSecret = c.env.SIGN_SECRETS?.trim();
+		if (!signSecret) {
+			c.status(500);
+			return c.json({ error: "SIGN_SECRETS is not configured." });
+		}
+		try {
+			await verifyRedirectSign(c.req.query("sign"), signSecret);
+		} catch (err: any) {
+			c.status(400);
+			return c.json({ error: err.message });
+		}
 	}
 	const statePayload = appReturnUrl;
 	const state = await encodeState(statePayload, env.ENCRYPTION_SECRETS);
@@ -350,6 +366,19 @@ app.get("/api/gitee-oauth/authorize", async (c) => {
 	if (!isValidRedirect(appReturnUrl)) {
 		c.status(400);
 		return c.json({ error: INVALID_REDIRECT_MSG });
+	}
+	if (!isHttpOrHttpsRedirect(appReturnUrl)) {
+		const signSecret = c.env.SIGN_SECRETS?.trim();
+		if (!signSecret) {
+			c.status(500);
+			return c.json({ error: "SIGN_SECRETS is not configured." });
+		}
+		try {
+			await verifyRedirectSign(c.req.query("sign"), signSecret);
+		} catch (err: any) {
+			c.status(400);
+			return c.json({ error: err.message });
+		}
 	}
 
 	const statePayload = appReturnUrl;
